@@ -37,6 +37,8 @@ Consider variables that:
 IMPORTANT: Return your results as a CSV with exactly these column headers:
 variable_name,variable_definition,relevance_to_goal,variable_type
 
+Do not include any paper metadata, titles, authors, or other text above the CSV. Start your response directly with the header row above, followed by the data rows.
+
 Where:
 - variable_name: Standardized name for the variable
 - variable_definition: Clear definition of what this variable represents
@@ -78,6 +80,8 @@ For each consolidated relationship, provide:
 
 IMPORTANT: Return ONLY a CSV with exactly these column headers:
 causal_variable,effect_variable,relationship_name,polarity,supporting_citations
+
+Do not include any paper metadata, titles, authors, or other text above the CSV. Start your response directly with the header row above, followed by the data rows.
 
 Rules:
 - ONLY include relationships where both variables are in the selected variables list
