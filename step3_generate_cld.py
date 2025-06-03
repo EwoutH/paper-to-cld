@@ -36,11 +36,20 @@ class CLDGenerator:
             'balancing_loop': '#6B73FF'  # Purple
         }
 
-    def load_consolidated_relations(self, csv_path):
-        """Load consolidated relations from Step 2."""
+    def load_consolidated_relations(self, relations_csv_path, variables_csv_path=None):
+        """Load consolidated relations and variables from Step 2."""
         try:
-            self.relations_df = pd.read_csv(csv_path)
+            self.relations_df = pd.read_csv(relations_csv_path)
             print(f"Loaded {len(self.relations_df)} consolidated relations")
+
+            # Load variable definitions if available
+            if variables_csv_path and os.path.exists(variables_csv_path):
+                self.variables_df = pd.read_csv(variables_csv_path)
+                print(f"Loaded {len(self.variables_df)} variable definitions")
+            else:
+                self.variables_df = None
+                print("No variable definitions file provided")
+
             return True
         except Exception as e:
             print(f"Error loading relations: {e}")
@@ -269,18 +278,57 @@ class CLDGenerator:
                                arrows=True, arrowsize=20, arrowstyle='->', ax=ax,
                                style='dashed')
 
-        # Draw nodes
-        nx.draw_networkx_nodes(self.graph, self.pos, node_color=self.colors['node'],
-                               node_size=3000, alpha=0.9, ax=ax)
+        # Draw nodes with different colors by variable type if available
+        if self.variables_df is not None:
+            # Create a mapping of variable to type
+            var_type_map = dict(zip(self.variables_df['variable_name'], self.variables_df['variable_type']))
+
+            # Color mapping for variable types
+            type_colors = {
+                'outcome': '#DC143C',  # Red
+                'driver': '#228B22',  # Forest Green
+                'mediator': '#4169E1',  # Royal Blue
+                'context': '#9932CC'  # Dark Orchid
+            }
+
+            # Draw nodes by type
+            for var_type, color in type_colors.items():
+                type_nodes = [node for node in self.graph.nodes() if var_type_map.get(node) == var_type]
+                if type_nodes:
+                    type_pos = {node: self.pos[node] for node in type_nodes}
+                    nx.draw_networkx_nodes(self.graph, type_pos, nodelist=type_nodes,
+                                           node_color=color, node_size=3000, alpha=0.9, ax=ax)
+
+            # Draw remaining nodes (if any don't have types)
+            typed_nodes = set(var_type_map.keys())
+            remaining_nodes = [node for node in self.graph.nodes() if node not in typed_nodes]
+            if remaining_nodes:
+                remaining_pos = {node: self.pos[node] for node in remaining_nodes}
+                nx.draw_networkx_nodes(self.graph, remaining_pos, nodelist=remaining_nodes,
+                                       node_color=self.colors['node'], node_size=3000, alpha=0.9, ax=ax)
+
+            # Create legend for node types
+            type_patches = [mpatches.Patch(color=color, label=f'{var_type.capitalize()} variables')
+                            for var_type, color in type_colors.items()
+                            if any(var_type_map.get(node) == var_type for node in self.graph.nodes())]
+        else:
+            # Draw all nodes with same color
+            nx.draw_networkx_nodes(self.graph, self.pos, node_color=self.colors['node'],
+                                   node_size=3000, alpha=0.9, ax=ax)
+            type_patches = []
 
         # Draw labels
         nx.draw_networkx_labels(self.graph, self.pos, font_size=8, font_weight='bold',
                                 font_color='white', ax=ax)
 
         # Create legend
-        positive_patch = mpatches.Patch(color=self.colors['positive'], label='Positive relationship')
-        negative_patch = mpatches.Patch(color=self.colors['negative'], label='Negative relationship')
-        ax.legend(handles=[positive_patch, negative_patch], loc='upper right')
+        edge_patches = [
+            mpatches.Patch(color=self.colors['positive'], label='Positive relationship'),
+            mpatches.Patch(color=self.colors['negative'], label='Negative relationship')
+        ]
+
+        all_patches = edge_patches + type_patches
+        ax.legend(handles=all_patches, loc='upper right', bbox_to_anchor=(1, 1))
 
         ax.set_title('Causal Loop Diagram', fontsize=16, fontweight='bold', pad=20)
         ax.axis('off')
@@ -288,25 +336,56 @@ class CLDGenerator:
         plt.tight_layout()
         return fig
 
-    def generate_narrative(self, feedback_loops):
+    def generate_narrative(self, feedback_loops, research_goal=None):
         """Generate narrative explanation of the causal system."""
         print("Generating system narrative...")
 
         narrative = []
-        narrative.append("CAUSAL SYSTEM ANALYSIS NARRATIVE")
+        narrative.append("GOAL-ORIENTED CAUSAL SYSTEM ANALYSIS")
         narrative.append("=" * 50)
         narrative.append("")
+
+        if research_goal:
+            narrative.append(f"RESEARCH GOAL: {research_goal}")
+            narrative.append("")
 
         # System overview
         narrative.append("SYSTEM OVERVIEW:")
         narrative.append(
-            f"The causal system contains {self.graph.number_of_nodes()} variables connected by {self.graph.number_of_edges()} causal relationships.")
+            f"The focused causal system contains {self.graph.number_of_nodes()} key variables connected by {self.graph.number_of_edges()} causal relationships.")
+
+        # Variable type analysis if available
+        if self.variables_df is not None:
+            type_counts = self.variables_df['variable_type'].value_counts()
+            narrative.append("Variable composition:")
+            for var_type, count in type_counts.items():
+                narrative.append(f"  - {var_type.capitalize()} variables: {count}")
 
         # Relationship distribution
         positive_count = sum(1 for _, _, d in self.graph.edges(data=True) if d['polarity'] == 'positive')
         negative_count = sum(1 for _, _, d in self.graph.edges(data=True) if d['polarity'] == 'negative')
         narrative.append(f"Of these relationships, {positive_count} are positive and {negative_count} are negative.")
         narrative.append("")
+
+        # Variable type analysis
+        if self.variables_df is not None:
+            narrative.append("KEY VARIABLES BY FUNCTION:")
+            narrative.append("")
+
+            for var_type in ['outcome', 'driver', 'mediator', 'context']:
+                type_vars = self.variables_df[self.variables_df['variable_type'] == var_type]
+                if not type_vars.empty:
+                    narrative.append(f"{var_type.upper()} VARIABLES:")
+                    for _, row in type_vars.head(5).iterrows():  # Top 5 per type
+                        # Get connection info for this variable
+                        in_degree = self.graph.in_degree(row['variable_name']) if row[
+                                                                                      'variable_name'] in self.graph else 0
+                        out_degree = self.graph.out_degree(row['variable_name']) if row[
+                                                                                        'variable_name'] in self.graph else 0
+                        narrative.append(f"  - {row['variable_name']}: {row['variable_definition']}")
+                        narrative.append(f"    Connections: {in_degree} incoming, {out_degree} outgoing")
+                        narrative.append(f"    Goal relevance: {row['relevance_to_goal']}")
+                    narrative.append("")
 
         # Most influential variables
         narrative.append("MOST INFLUENTIAL VARIABLES:")
@@ -406,17 +485,42 @@ class CLDGenerator:
         narrative.append("")
 
         # Policy implications
-        narrative.append("POLICY AND INTERVENTION IMPLICATIONS:")
+        narrative.append("GOAL-ORIENTED POLICY IMPLICATIONS:")
 
-        # Identify leverage points
-        high_influence_vars = [var for var, centrality in
-                               sorted(out_centrality.items(), key=lambda x: x[1], reverse=True)[:3]]
+        # Identify leverage points by variable type
+        if self.variables_df is not None:
+            driver_vars = self.variables_df[self.variables_df['variable_type'] == 'driver']['variable_name'].tolist()
+            outcome_vars = self.variables_df[self.variables_df['variable_type'] == 'outcome']['variable_name'].tolist()
 
-        narrative.append("High-leverage intervention points:")
-        for var in high_influence_vars:
-            out_degree = self.graph.out_degree(var)
-            narrative.append(f"  - {var}: Changes here could affect {out_degree} other variables")
-        narrative.append("")
+            if driver_vars:
+                narrative.append("High-leverage intervention points (driver variables):")
+                for var in driver_vars:
+                    if var in self.graph:
+                        out_degree = self.graph.out_degree(var)
+                        # Check if this driver affects any outcomes
+                        affects_outcomes = any(self.graph.has_edge(var, outcome) for outcome in outcome_vars)
+                        outcome_indicator = " (directly affects outcomes)" if affects_outcomes else ""
+                        narrative.append(f"  - {var}: influences {out_degree} variables{outcome_indicator}")
+                narrative.append("")
+
+            if outcome_vars:
+                narrative.append("Key outcome monitoring points:")
+                for var in outcome_vars:
+                    if var in self.graph:
+                        in_degree = self.graph.in_degree(var)
+                        narrative.append(f"  - {var}: influenced by {in_degree} variables")
+                narrative.append("")
+        else:
+            # Fallback to centrality-based analysis
+            out_centrality = nx.out_degree_centrality(self.graph)
+            high_influence_vars = [var for var, centrality in
+                                   sorted(out_centrality.items(), key=lambda x: x[1], reverse=True)[:3]]
+
+            narrative.append("High-leverage intervention points:")
+            for var in high_influence_vars:
+                out_degree = self.graph.out_degree(var)
+                narrative.append(f"  - {var}: Changes here could affect {out_degree} other variables")
+            narrative.append("")
 
         if feedback_loops:
             narrative.append("Loop intervention strategies:")
@@ -426,7 +530,7 @@ class CLDGenerator:
 
         return "\n".join(narrative)
 
-    def save_all_outputs(self, layout_type='spring'):
+    def save_all_outputs(self, layout_type='spring', research_goal=None):
         """Generate and save all CLD outputs."""
         print("Generating all CLD outputs...")
 
@@ -449,7 +553,7 @@ class CLDGenerator:
             print(f"✓ Static diagram saved: {matplotlib_path}")
 
         # Generate and save narrative
-        narrative = self.generate_narrative(feedback_loops)
+        narrative = self.generate_narrative(feedback_loops, research_goal)
         narrative_path = f"{self.output_dir}/step3_system_narrative.txt"
         with open(narrative_path, 'w', encoding='utf-8') as f:
             f.write(narrative)
@@ -475,6 +579,10 @@ class CLDGenerator:
                 data=True)) / self.graph.number_of_edges() if self.graph.number_of_edges() > 0 else 0
         }
 
+        # Add variable type statistics if available
+        if self.variables_df is not None:
+            stats['variable_types'] = self.variables_df['variable_type'].value_counts().to_dict()
+
         stats_path = f"{self.output_dir}/step3_graph_statistics.json"
         with open(stats_path, 'w', encoding='utf-8') as f:
             json.dump(stats, f, indent=2)
@@ -489,26 +597,31 @@ class CLDGenerator:
         }
 
 
-def process_step3(consolidated_csv_path, output_dir="results", layout_type='spring'):
+def process_step3(relations_csv_path, variables_csv_path=None, output_dir="results", layout_type='spring',
+                  research_goal=None):
     """
-    Step 3: Generate Causal Loop Diagrams from consolidated relations.
+    Step 3: Generate Causal Loop Diagrams from goal-oriented consolidated relations.
 
     Args:
-        consolidated_csv_path (str): Path to consolidated relations CSV from Step 2
+        relations_csv_path (str): Path to consolidated relations CSV from Step 2
+        variables_csv_path (str): Path to selected variables CSV from Step 2
         output_dir (str): Directory to save results
         layout_type (str): Layout algorithm ('spring', 'circular', 'hierarchical')
+        research_goal (str): Research goal for context in narrative
     """
 
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
 
-    print(f"Processing consolidated relations from: {consolidated_csv_path}")
+    print(f"Processing consolidated relations from: {relations_csv_path}")
+    if variables_csv_path:
+        print(f"Using variable definitions from: {variables_csv_path}")
 
     # Initialize CLD generator
     cld_generator = CLDGenerator(output_dir)
 
-    # Load consolidated relations
-    if not cld_generator.load_consolidated_relations(consolidated_csv_path):
+    # Load consolidated relations and variables
+    if not cld_generator.load_consolidated_relations(relations_csv_path, variables_csv_path):
         print("✗ Failed to load consolidated relations")
         return
 
@@ -518,10 +631,13 @@ def process_step3(consolidated_csv_path, output_dir="results", layout_type='spri
         return
 
     # Generate all outputs
-    output_files = cld_generator.save_all_outputs(layout_type)
+    output_files = cld_generator.save_all_outputs(layout_type, research_goal)
 
     print(f"\n✓ Step 3 completed successfully!")
     print(f"  - Graph: {cld_generator.graph.number_of_nodes()} nodes, {cld_generator.graph.number_of_edges()} edges")
+    if cld_generator.variables_df is not None:
+        var_types = cld_generator.variables_df['variable_type'].value_counts()
+        print(f"  - Variable types: {dict(var_types)}")
     print("  - Generated files:")
     for output_type, filepath in output_files.items():
         if filepath:
@@ -529,12 +645,23 @@ def process_step3(consolidated_csv_path, output_dir="results", layout_type='spri
 
 
 if __name__ == "__main__":
-    # Configuration
-    consolidated_csv_path = "results/step2_consolidated_relations.csv"
+    # Configuration - update paths to match your Step 2 outputs
+    relations_csv_path = "results/step2b_consolidated_relations.csv"
+    variables_csv_path = "results/step2a_selected_variables.csv"
+
+    # Load research goal from Step 2 configuration if available
+    config_path = "results/step2_configuration.json"
+    research_goal = None
+    if os.path.exists(config_path):
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+            research_goal = config.get('research_goal')
 
     # Run Step 3
     process_step3(
-        consolidated_csv_path=consolidated_csv_path,
+        relations_csv_path=relations_csv_path,
+        variables_csv_path=variables_csv_path,
         output_dir="results",
-        layout_type='spring'  # Options: 'spring', 'circular', 'hierarchical'
+        layout_type='spring',  # Options: 'spring', 'circular', 'hierarchical'
+        research_goal=research_goal
     )
