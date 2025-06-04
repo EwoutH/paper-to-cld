@@ -152,30 +152,32 @@ SELECTED VARIABLES: {', '.join(selected_variables)}
 Your task: For relationships between the selected variables:
 - MERGE similar relationships across papers
 - RESOLVE conflicts about polarity (choose most supported)
-- STANDARDIZE variable names
+- STANDARDIZE variable names to match the selected variables list above
 - CITE supporting papers properly
 
 Return a JSON object with this EXACT structure:
 {{
   "consolidated_relationships": [
     {{
-      "causal_variable": "standardized cause variable name",
-      "effect_variable": "standardized effect variable name", 
+      "causal_variable": "standardized cause variable name from selected list",
+      "effect_variable": "standardized effect variable name from selected list", 
       "relationship_name": "descriptive name for relationship",
       "polarity": "positive or negative",
       "supporting_citations": "comma-separated APA citations",
-      "strength": "high, medium, or low"
     }}
   ]
 }}
 
-IMPORTANT: Only include relationships between the selected variables listed above.
+IMPORTANT:
+- Only include relationships between the selected variables listed above.
+- Only one relationship per pair of variables is allowed (no duplicates).
+- Only include direct causal relationships.
 
 Here is the extracted data from all papers:
 
 """
 
-        # Add paper data
+        # Add all paper data - let LLM do the filtering and mapping
         for paper in papers_data:
             metadata = paper['metadata']
             prompt += f"\n--- Paper: {metadata.get('title', 'Unknown')} ---\n"
@@ -183,10 +185,10 @@ Here is the extracted data from all papers:
 
             prompt += "Causal relationships:\n"
             for rel in paper['relations']:
-                if rel['causal_variable'] in selected_variables and rel['effect_variable'] in selected_variables:
-                    prompt += f"  {rel['causal_variable']} → {rel['effect_variable']} ({rel['polarity']}): {rel['context_evidence']}\n"
+                prompt += f"  {rel['causal_variable']} → {rel['effect_variable']} ({rel['polarity']}): {rel['context_evidence']}\n"
             prompt += "\n"
 
+        print(f"Prompt has {len(prompt.splitlines())} lines and {len(prompt)} characters")
         return prompt
 
     def call_llm(self, prompt: str) -> Tuple[Optional[Dict], str]:
@@ -206,6 +208,7 @@ Here is the extracted data from all papers:
             )
 
             response_text = response.text
+            print(f"Response text: {response_text}")
 
             # Extract JSON
             start_idx = response_text.find('{')
@@ -219,6 +222,8 @@ Here is the extracted data from all papers:
 
             return result, response_text
 
+        except json.JSONDecodeError as e:
+            return None, f"JSON Error: {str(e)}"
         except Exception as e:
             return None, f"Error: {str(e)}"
 
@@ -241,15 +246,15 @@ Here is the extracted data from all papers:
             return None
 
         # Calculate layout
-        if layout_type == 'spring':
+        if layout_type == 'Spring':
             pos = nx.spring_layout(G, k=1, iterations=50, seed=42)
-        elif layout_type == 'circular':
+        elif layout_type == 'Circular':
             pos = nx.circular_layout(G)
-        elif layout_type == 'shell':
+        elif layout_type == 'Shell':
             pos = nx.shell_layout(G)
         elif layout_type == 'Kamada-Kawai':
             pos = nx.kamada_kawai_layout(G)
-        elif layout_type == 'spectral':
+        elif layout_type == 'Spectral':
             pos = nx.spectral_layout(G)
         else:
             pos = nx.spring_layout(G, seed=42)
@@ -535,8 +540,16 @@ def main():
                     help="In proper CLDs, variables should have multiple connections to show system dynamics"
                 )
 
+                rel_keys = []
                 for rel in st.session_state.consolidated_relations:
                     rel_key = f"{rel['causal_variable']}→{rel['effect_variable']}"
+
+                    # Check if rel_key already exists to avoid duplicates
+                    if rel_key in rel_keys:
+                        # Warn
+                        st.warning(f"Duplicate relationship found: {rel_key}. Skipping.")
+                        continue
+
                     current_selection = st.session_state.relation_selections.get(rel_key, True)
 
                     # Format polarity indicator
