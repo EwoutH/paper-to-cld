@@ -36,7 +36,10 @@ if 'relation_selections' not in st.session_state:
     st.session_state.relation_selections = {}
 if 'goal_description' not in st.session_state:
     st.session_state.goal_description = ""
-
+if 'variable_topics' not in st.session_state:
+    st.session_state.variable_topics = []
+if 'topic_selections' not in st.session_state:
+    st.session_state.topic_selections = {}
 
 class CLDBuilder:
     """Class to build Causal Loop Diagrams interactively."""
@@ -94,7 +97,7 @@ class CLDBuilder:
     def get_variable_consolidation_prompt(self, goal_description: str, papers_data: List[Dict]) -> str:
         """Create prompt for variable consolidation."""
         prompt = f"""
-You are an expert in causal analysis. Your task is to identify the most important variables for a specific research goal.
+You are an expert in causal analysis. Your task is to identify the most important variables for a specific research goal, organized by thematic topics.
 
 GOAL: {goal_description}
 
@@ -102,21 +105,28 @@ You will receive data from multiple research papers. For each paper, you'll see:
 1. Paper metadata
 2. Extracted causal relationships
 
-Your task: Select 25-40 most important variables that are relevant to the research goal.
+Your task: Select 25-60 most important variables that are relevant to the research goal, organized into thematic topics.
 
 Selection criteria:
 - Variables directly related to the goal
+- Variables are specific, have a clear definition and optionally a unit of measurement
 - Major system drivers or influences  
 - Variables in important feedback loops
 - Policy-relevant intervention points
 
 Return a JSON object with this EXACT structure:
 {{
-  "selected_variables": [
+  "variable_topics": [
     {{
-      "variable_name": "standardized variable name",
-      "definition": "clear definition of this variable",
-      "relevance_explanation": "why this variable is relevant to the goal"
+      "topic_name": "clear topic name (e.g., Economic Factors, Technology Adoption)",
+      "topic_description": "brief description of what this topic covers",
+      "variables": [
+        {{
+          "variable_name": "standardized variable name",
+          "definition": "clear definition of this variable",
+          "unit": "units of measurement (if applicable, otherwise empty string)"
+        }}
+      ]
     }}
   ]
 }}
@@ -142,18 +152,35 @@ Here is the extracted data from all papers:
     def get_relation_consolidation_prompt(self, goal_description: str, selected_variables: List[str],
                                           papers_data: List[Dict]) -> str:
         """Create prompt for relation consolidation."""
+        # Organize selected variables by their topics for better context
+        selected_vars_by_topic = {}
+        for topic in st.session_state.variable_topics:
+            topic_vars = [var['variable_name'] for var in topic['variables']
+                          if var['variable_name'] in selected_variables]
+            if topic_vars:
+                selected_vars_by_topic[topic['topic_name']] = topic_vars
+
         prompt = f"""
 You are an expert in causal analysis. Your task is to consolidate causal relationships between selected variables.
 
 GOAL: {goal_description}
 
-SELECTED VARIABLES: {', '.join(selected_variables)}
+SELECTED VARIABLES BY TOPIC:
+"""
+        # Add selected variables organized by topic
+        for topic_name, vars_in_topic in selected_vars_by_topic.items():
+            prompt += f"\n{topic_name}:\n"
+            for var in vars_in_topic:
+                prompt += f"  - {var}\n"
+
+        prompt += f"""
 
 Your task: For relationships between the selected variables:
 - MERGE similar relationships across papers
 - RESOLVE conflicts about polarity (choose most supported)
 - STANDARDIZE variable names to match the selected variables list above
 - CITE supporting papers properly
+- Focus on relationships that cross topic boundaries as well as within topics
 
 Return a JSON object with this EXACT structure:
 {{
@@ -164,6 +191,8 @@ Return a JSON object with this EXACT structure:
       "relationship_name": "descriptive name for relationship",
       "polarity": "positive or negative",
       "supporting_citations": "comma-separated APA citations",
+      "strength": "high, medium, or low",
+      "cross_topic": true/false (indicates if this relationship crosses topic boundaries)
     }}
   ]
 }}
@@ -172,6 +201,7 @@ IMPORTANT:
 - Only include relationships between the selected variables listed above.
 - Only one relationship per pair of variables is allowed (no duplicates).
 - Only include direct causal relationships.
+- Pay special attention to cross-topic relationships as these often reveal important system dynamics.
 
 Here is the extracted data from all papers:
 
@@ -185,7 +215,8 @@ Here is the extracted data from all papers:
 
             prompt += "Causal relationships:\n"
             for rel in paper['relations']:
-                prompt += f"  {rel['causal_variable']} → {rel['effect_variable']} ({rel['polarity']}): {rel['context_evidence']}\n"
+                if rel['causal_variable'] in selected_variables and rel['effect_variable'] in selected_variables:
+                    prompt += f"  {rel['causal_variable']} → {rel['effect_variable']} ({rel['polarity']}): {rel['context_evidence']}\n"
             prompt += "\n"
 
         print(f"Prompt has {len(prompt.splitlines())} lines and {len(prompt)} characters")
@@ -437,7 +468,8 @@ def main():
         if goal_description != st.session_state.goal_description:
             st.session_state.goal_description = goal_description
             # Reset downstream selections when goal changes
-            st.session_state.selected_variables = []
+            st.session_state.variable_topics = []
+            st.session_state.topic_selections = {}
             st.session_state.variable_selections = {}
             st.session_state.consolidated_relations = []
             st.session_state.relation_selections = {}
@@ -451,54 +483,102 @@ def main():
                                                                            st.session_state.extracted_papers)
                     result, raw_response = cld_builder.call_llm(prompt)
 
-                    if result and 'selected_variables' in result:
-                        st.session_state.selected_variables = result['selected_variables']
-                        # Initialize all as selected
-                        st.session_state.variable_selections = {
-                            var['variable_name']: True for var in result['selected_variables']
+                    if result and 'variable_topics' in result:
+                        st.session_state.variable_topics = result['variable_topics']
+                        # Initialize all topics and variables as selected
+                        st.session_state.topic_selections = {
+                            topic['topic_name']: True for topic in result['variable_topics']
                         }
+                        st.session_state.variable_selections = {}
+                        for topic in result['variable_topics']:
+                            for var in topic['variables']:
+                                st.session_state.variable_selections[var['variable_name']] = True
+
                         # Reset relations when variables change
                         st.session_state.consolidated_relations = []
                         st.session_state.relation_selections = {}
-                        st.success(f"✅ Selected {len(result['selected_variables'])} variables")
+
+                        total_vars = sum(len(topic['variables']) for topic in result['variable_topics'])
+                        st.success(f"✅ Selected {total_vars} variables in {len(result['variable_topics'])} topics")
                     else:
                         st.error("❌ Failed to get valid response from LLM")
                         with st.expander("View raw response"):
                             st.text(raw_response)
 
-        # Show selected variables with checkboxes
-        if st.session_state.selected_variables:
+        # Show selected variables organized by topics with hierarchical checkboxes
+        if st.session_state.variable_topics:
             with col2:
-                st.subheader("Selected Variables")
-                st.markdown("Check/uncheck variables to include in your analysis:")
+                st.subheader("Selected Variables by Topic")
+                st.markdown("Check/uncheck topics and variables to include in your analysis:")
 
-                for var in st.session_state.selected_variables:
-                    var_name = var['variable_name']
-                    current_selection = st.session_state.variable_selections.get(var_name, True)
+                for topic in st.session_state.variable_topics:
+                    topic_name = topic['topic_name']
+                    current_topic_selection = st.session_state.topic_selections.get(topic_name, True)
 
-                    new_selection = st.checkbox(
-                        f"**{var_name}**",
-                        value=current_selection,
-                        key=f"var_{var_name}",
-                        help=f"Definition: {var['definition']}\nRelevance: {var.get('relevance_explanation', 'N/A')}"
+                    # Topic-level checkbox
+                    new_topic_selection = st.checkbox(
+                        f"**📁 {topic_name}**",
+                        value=current_topic_selection,
+                        key=f"topic_{topic_name}",
+                        help=topic['topic_description']
                     )
 
-                    if new_selection != current_selection:
-                        st.session_state.variable_selections[var_name] = new_selection
+                    # If topic selection changed, update all variables in that topic
+                    if new_topic_selection != current_topic_selection:
+                        st.session_state.topic_selections[topic_name] = new_topic_selection
+                        for var in topic['variables']:
+                            st.session_state.variable_selections[var['variable_name']] = new_topic_selection
                         # Reset relations when variable selection changes
                         st.session_state.consolidated_relations = []
                         st.session_state.relation_selections = {}
+                        st.rerun()
 
-                selected_count = sum(st.session_state.variable_selections.values())
-                st.info(f"Selected: {selected_count}/{len(st.session_state.selected_variables)} variables")
+                    # Show variables within topic (indented)
+                    if new_topic_selection:  # Only show variables if topic is selected
+                        for var in topic['variables']:
+                            var_name = var['variable_name']
+                            unit_display = f" [{var['unit']}]" if var['unit'] else ""
+                            current_var_selection = st.session_state.variable_selections.get(var_name, True)
+
+                            new_var_selection = st.checkbox(
+                                f"    📊 {var_name}{unit_display}",
+                                value=current_var_selection,
+                                key=f"var_{var_name}",
+                                help=var['definition']
+                            )
+
+                            if new_var_selection != current_var_selection:
+                                st.session_state.variable_selections[var_name] = new_var_selection
+                                # Reset relations when variable selection changes
+                                st.session_state.consolidated_relations = []
+                                st.session_state.relation_selections = {}
+
+                                # If variable is unchecked, check if topic should be unchecked
+                                if not new_var_selection:
+                                    topic_vars_selected = any(
+                                        st.session_state.variable_selections.get(v['variable_name'], False)
+                                        for v in topic['variables']
+                                    )
+                                    if not topic_vars_selected:
+                                        st.session_state.topic_selections[topic_name] = False
+
+                    st.write("")  # Add spacing between topics
+
+                # Summary statistics
+                selected_topics = sum(st.session_state.topic_selections.values())
+                selected_vars = sum(st.session_state.variable_selections.values())
+                total_topics = len(st.session_state.variable_topics)
+                total_vars = sum(len(topic['variables']) for topic in st.session_state.variable_topics)
+
+                st.info(f"Selected: {selected_topics}/{total_topics} topics, {selected_vars}/{total_vars} variables")
 
     # Step 3: Relation Consolidation
-    if st.session_state.selected_variables and any(st.session_state.variable_selections.values()):
+    if st.session_state.variable_topics and any(st.session_state.variable_selections.values()):
         st.header("🔗 Step 3: Relation Consolidation")
 
         selected_var_names = [
-            var['variable_name'] for var in st.session_state.selected_variables
-            if st.session_state.variable_selections.get(var['variable_name'], False)
+            var_name for var_name, selected in st.session_state.variable_selections.items()
+            if selected
         ]
 
         col1, col2 = st.columns([1, 3])
