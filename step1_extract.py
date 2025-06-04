@@ -15,7 +15,7 @@ def load_extraction_prompt():
 You are an expert in causal analysis and systems thinking. Your task is to:
 
 1. FIRST, extract the paper metadata and format it exactly as shown below
-2. THEN, extract ALL causal relationships from the paper
+2. THEN, extract direct causal relationships from the paper
 
 STEP 1 - METADATA EXTRACTION:
 Extract and format the following information exactly as shown:
@@ -27,7 +27,7 @@ DOI: [DOI if available, otherwise "Not available"]
 CITATION: [APA in-text citation format: (Author, Year) or (Author1 & Author2, Year)]
 
 STEP 2 - RELATION EXTRACTION:
-For each causal relationship you identify, extract in CSV format with these exact headers:
+For each direct causal relationship you identify, extract in CSV format with these exact headers:
 causal_variable,effect_variable,relationship_name,polarity,context_evidence
 
 Guidelines for extraction:
@@ -37,12 +37,17 @@ Guidelines for extraction:
 - polarity: "positive" (cause increases effect) or "negative" (cause decreases effect)
 - context_evidence: Brief quote or context from the paper (keep under 100 characters)
 
-Extract ALL causal relationships including:
-- Direct causal claims
-- Correlational relationships that imply causation
-- Theoretical causal mechanisms
-- Empirical findings showing cause-effect
-- Feedback loops and system dynamics
+ONLY extract relationships that are EXPLICITLY stated as causal, including:
+- Direct causal claims using words like "causes", "leads to", "results in", "drives", "influences"
+- Experimental results showing cause-and-effect relationships
+- Theoretical models that explicitly specify causal mechanisms
+- Statistical analyses that establish causality (not just correlation)
+
+DO NOT extract:
+- Simple correlations or associations without causal language
+- Implicit or inferred relationships
+- Relationships that are only suggested or hypothesized
+- Statistical relationships that don't establish causation
 
 IMPORTANT: 
 - Start with the 6 metadata lines exactly as formatted above
