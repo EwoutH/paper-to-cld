@@ -1,5 +1,5 @@
 # Step 1: Extract Relations from Papers
-# pip install google-genai pandas python-dotenv
+# pip install google-genai python-dotenv
 
 import os
 import time
@@ -7,7 +7,6 @@ import glob
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
-from pathlib import Path
 
 
 def load_extraction_prompt():
@@ -54,10 +53,9 @@ IMPORTANT:
     return prompt
 
 
-def extract_from_paper(pdf_path, client, model="gemini-2.5-flash-preview-04-17"):
+def extract_from_paper(pdf_path, client, model="gemini-2.5-flash-preview-05-20"):
     """Extract metadata and causal relations from a single paper."""
     filename = os.path.basename(pdf_path)
-    paper_name = os.path.splitext(filename)[0]
 
     print(f"Processing: {filename}")
 
@@ -88,8 +86,8 @@ def extract_from_paper(pdf_path, client, model="gemini-2.5-flash-preview-04-17")
         )
 
         response_text = response.text
+        print(f"Response ({len(response_text)} characters): {response_text[:500]}...")
         response_text = f"FILENAME: {filename}\n{response_text}"
-        print(f"Response preview: {response_text[:200]}...")
 
         return response_text
 

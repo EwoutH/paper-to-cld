@@ -1,51 +1,73 @@
-# Step 2: Consolidate and Validate Relations
+# Step 2: Consolidate and Validate Relations with Goal-Directed Filtering
 # pip install google-genai pandas python-dotenv
 
 import os
 import glob
-import pandas as pd
+import json
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
-import io
-from pathlib import Path
 
 
 def load_consolidation_prompt(goal_description):
-    """Load the prompt template for goal-directed relation consolidation."""
+    """Load the prompt template for relation consolidation with goal filtering."""
     prompt = f"""
-You are an expert in causal analysis and systems thinking. Your task is to create a focused, goal-directed Causal Loop Diagram by consolidating and validating causal relationships from multiple research papers.
+You are an expert in causal analysis and systems thinking. Your task is to consolidate causal relationships from multiple research papers, focusing specifically on relationships relevant to a particular goal.
 
-RESEARCH GOAL/FOCUS: {goal_description}
+GOAL/FOCUS: {goal_description}
 
 You will receive multiple text files, each containing:
 1. Paper metadata (filename, title, date, authors, DOI, citation)
 2. A CSV of causal relationships from that paper
 
-Your task has TWO PARTS - return both parts in a single response:
+Your task has TWO PARTS:
 
 PART 1: RELEVANT VARIABLE SELECTION
-First, identify the key variables that are relevant to the research goal. Select 15-25 most important variables that either:
+First, identify the key variables that are relevant to the research goal. Select 25-40 most important variables that either:
 - Directly relate to the goal/outcome of interest
 - Are major drivers or influences in the system
 - Participate in important feedback loops
 - Are policy-relevant intervention points
 
-Format as CSV with headers: variable_name,definition,relevance_to_goal
+PART 2: CONSOLIDATE RELEVANT RELATIONSHIPS
+For relationships between the selected variables:
+- MERGE similar relationships across papers
+- RESOLVE conflicts about polarity (choose most supported)
+- STANDARDIZE variable names (use clearest version)
+- CITE supporting papers properly
 
-PART 2: RELEVANT RELATIONSHIP CONSOLIDATION
-Then, consolidate ONLY the relationships between the selected variables. For each relationship:
-- causal_variable: Must be from your selected variables list
-- effect_variable: Must be from your selected variables list  
-- relationship_name: Clear descriptive name
-- polarity: "positive" or "negative" (consensus across sources)
-- supporting_citations: APA in-text citations
+Return your response as a JSON object with this EXACT structure:
 
-Format as CSV with headers: causal_variable,effect_variable,relationship_name,polarity,supporting_citations
+{{
+  "selected_variables": [
+    {{
+      "variable_name": "standardized variable name",
+      "definition": "clear definition of this variable",
+      "unit": "units of measurement (if applicable, otherwise "")",
+    }}
+  ],
+  "consolidated_relationships": [
+    {{
+      "causal_variable": "standardized cause variable name",
+      "effect_variable": "standardized effect variable name", 
+      "relationship_name": "descriptive name for relationship",
+      "polarity": "positive or negative",
+      "supporting_citations": "comma-separated APA citations",
+    }}
+  ]
+}}
+
+IMPORTANT RULES:
+- Only include variables and relationships relevant to the goal
+- Only include relationships between selected variables
+- Use exact APA citations from paper headers
+- Ensure JSON is valid (proper quotes, commas, brackets)
+- Focus on the most important causal pathways for the goal
 
 SELECTION CRITERIA:
 - Focus on variables most relevant to: {goal_description}
 - Prioritize relationships with strong empirical support
+- Only include direct causal relationships
 - Include key feedback loops and leverage points
 - Exclude peripheral or weakly-supported relationships
 - Merge similar variables (e.g., "GDP growth" and "Economic growth")
@@ -54,7 +76,8 @@ IMPORTANT:
 - Return exactly two CSV sections: "PART 1: SELECTED VARIABLES" followed by "PART 2: CONSOLIDATED RELATIONSHIPS"
 - Only include relationships between variables from Part 1
 - Use exact APA citations from paper headers
-- No other text, explanations, or markdown formatting
+- Ensure JSON is valid (proper quotes, commas, brackets)
+- Focus on the most important causal pathways for the goal
 
 Here are the extracted relations from all papers:
 
@@ -89,94 +112,46 @@ def load_extraction_files(extraction_dir):
     return combined_content
 
 
-def parse_two_part_response(response_text):
-    """Parse the two-part response: variables and relationships."""
+def extract_json_from_response(response_text):
+    """Extract JSON from LLM response."""
     try:
-        lines = response_text.strip().split('\n')
+        # Find JSON content between first { and last }
+        start_idx = response_text.find('{')
+        end_idx = response_text.rfind('}')
 
-        # Find the two parts
-        variables_df = pd.DataFrame()
-        relationships_df = pd.DataFrame()
+        if start_idx == -1 or end_idx == -1:
+            print("No JSON object found in response")
+            return None
 
-        current_part = None
-        csv_lines = []
+        json_str = response_text[start_idx:end_idx + 1]
+        result = json.loads(json_str)
 
-        for line in lines:
-            if 'PART 1' in line and 'SELECTED VARIABLES' in line:
-                current_part = 'variables'
-                csv_lines = []
-            elif 'PART 2' in line and 'CONSOLIDATED RELATIONSHIPS' in line:
-                # Process variables CSV if we have it
-                if csv_lines and current_part == 'variables':
-                    variables_df = parse_csv_from_lines(csv_lines)
-                current_part = 'relationships'
-                csv_lines = []
-            elif current_part and line.strip():
-                # Look for CSV headers
-                if ('variable_name' in line and current_part == 'variables') or \
-                        ('causal_variable' in line and current_part == 'relationships'):
-                    csv_lines = [line]
-                elif csv_lines and line.strip() and not line.startswith('---'):
-                    csv_lines.append(line)
-                elif not line.strip() and csv_lines:
-                    # End of current CSV
-                    if current_part == 'variables' and variables_df.empty:
-                        variables_df = parse_csv_from_lines(csv_lines)
-                    elif current_part == 'relationships' and relationships_df.empty:
-                        relationships_df = parse_csv_from_lines(csv_lines)
-                    csv_lines = []
+        # Validate required structure
+        if 'selected_variables' not in result or 'consolidated_relationships' not in result:
+            print("Invalid JSON structure - missing required keys")
+            return None
 
-        # Process final CSV if we ended with one
-        if csv_lines:
-            if current_part == 'variables' and variables_df.empty:
-                variables_df = parse_csv_from_lines(csv_lines)
-            elif current_part == 'relationships' and relationships_df.empty:
-                relationships_df = parse_csv_from_lines(csv_lines)
+        return result
 
-        return variables_df, relationships_df
-
-    except Exception as e:
-        print(f"Error parsing two-part response: {e}")
+    except json.JSONDecodeError as e:
+        print(f"Error parsing JSON: {e}")
         print(f"Response preview: {response_text[:500]}...")
-        return pd.DataFrame(), pd.DataFrame()
+        return None
 
 
-def parse_csv_from_lines(csv_lines):
-    """Parse CSV from list of lines."""
-    try:
-        if not csv_lines:
-            return pd.DataFrame()
-
-        csv_content = '\n'.join(csv_lines)
-        df = pd.read_csv(io.StringIO(csv_content))
-
-        # Clean up the data
-        df = df.dropna(how='all')
-        for col in df.columns:
-            if df[col].dtype == 'object':
-                df[col] = df[col].astype(str).str.strip()
-
-        return df
-
-    except Exception as e:
-        print(f"Error parsing CSV from lines: {e}")
-        return pd.DataFrame()
-
-
-def consolidate_with_llm(combined_extractions, goal_description, client, model="gemini-2.5-flash-preview-04-17"):
-    """Use LLM to consolidate relations focused on a specific goal."""
-    print("Starting goal-directed LLM consolidation...")
-    print(f"Research goal: {goal_description}")
+def consolidate_with_llm(combined_extractions, goal_description, client, model="gemini-2.5-flash-preview-05-20"):
+    """Use LLM to consolidate relations with goal-directed filtering."""
+    print("Starting goal-directed consolidation with LLM...")
 
     # Prepare the full prompt
     prompt = load_consolidation_prompt(goal_description) + combined_extractions
 
     # Check token length (rough estimate)
-    token_estimate = len(prompt) / 4  # Rough approximation
+    token_estimate = len(prompt) / 4
     print(f"Estimated tokens: {token_estimate:.0f}")
 
-    if token_estimate > 100000:  # If too long, we might need to chunk
-        print("Warning: Prompt is very long, may need chunking for some models")
+    if token_estimate > 180000:
+        print("Warning: Prompt is very long, may exceed model limits")
 
     try:
         # Create content for the model
@@ -197,104 +172,99 @@ def consolidate_with_llm(combined_extractions, goal_description, client, model="
         response_text = response.text
         print(f"LLM response preview: {response_text[:300]}...")
 
-        # Parse the two-part response
-        variables_df, relationships_df = parse_two_part_response(response_text)
+        # Extract and validate JSON
+        result_json = extract_json_from_response(response_text)
 
-        if not variables_df.empty and not relationships_df.empty:
-            print(f"✓ Successfully selected {len(variables_df)} variables and {len(relationships_df)} relationships")
-            return variables_df, relationships_df, response_text
+        if result_json:
+            num_variables = len(result_json.get('selected_variables', []))
+            num_relationships = len(result_json.get('consolidated_relationships', []))
+            print(f"✓ Successfully consolidated: {num_variables} variables, {num_relationships} relationships")
+            return result_json, response_text
         else:
-            print("✗ Failed to parse variables and/or relationships from LLM response")
-            return pd.DataFrame(), pd.DataFrame(), response_text
+            print("✗ Failed to parse valid JSON from LLM response")
+            return None, response_text
 
     except Exception as e:
         print(f"Error during LLM consolidation: {str(e)}")
-        return pd.DataFrame(), pd.DataFrame(), f"Error: {str(e)}"
+        return None, f"Error: {str(e)}"
 
 
-def create_analysis_report(variables_df, relationships_df, goal_description, output_dir):
-    """Create a detailed analysis report of the goal-directed consolidation."""
+def validate_and_enhance_result(result_json):
+    """Validate and enhance the consolidation result."""
+    if not result_json:
+        return None
 
-    if variables_df.empty or relationships_df.empty:
+    # Get variable names for validation
+    selected_var_names = {var['variable_name'] for var in result_json.get('selected_variables', [])}
+
+    # Validate relationships reference selected variables
+    valid_relationships = []
+    for rel in result_json.get('consolidated_relationships', []):
+        causal_var = rel.get('causal_variable', '')
+        effect_var = rel.get('effect_variable', '')
+
+        if causal_var in selected_var_names and effect_var in selected_var_names:
+            valid_relationships.append(rel)
+        else:
+            print(f"Warning: Relationship references unselected variable: {causal_var} -> {effect_var}")
+
+    # Update result with only valid relationships
+    result_json['consolidated_relationships'] = valid_relationships
+
+    # Add metadata
+    result_json['metadata'] = {
+        'total_selected_variables': len(result_json['selected_variables']),
+        'total_relationships': len(valid_relationships),
+        'positive_relationships': sum(1 for r in valid_relationships if r.get('polarity') == 'positive'),
+        'negative_relationships': sum(1 for r in valid_relationships if r.get('polarity') == 'negative'),
+        'high_evidence_relationships': sum(1 for r in valid_relationships if r.get('evidence_strength') == 'high')
+    }
+
+    return result_json
+
+
+def create_summary_report(result_json, goal_description, output_dir):
+    """Create a human-readable summary report."""
+    if not result_json:
         return
 
-    # Count supporting papers for each relation
-    relationships_df['num_supporting_papers'] = relationships_df['supporting_citations'].str.count('\(')
+    report_path = f"{output_dir}/step2_summary_report.txt"
 
-    # Analysis statistics
-    total_variables = len(variables_df)
-    total_relationships = len(relationships_df)
-    avg_support = relationships_df['num_supporting_papers'].mean()
-
-    positive_relations = (relationships_df['polarity'] == 'positive').sum()
-    negative_relations = (relationships_df['polarity'] == 'negative').sum()
-
-    # Create analysis report
-    report_path = f"{output_dir}/step2_goal_directed_analysis.txt"
     with open(report_path, 'w', encoding='utf-8') as f:
-        f.write("GOAL-DIRECTED CLD ANALYSIS REPORT\n")
-        f.write("=" * 50 + "\n\n")
+        f.write("STEP 2 GOAL-DIRECTED CONSOLIDATION REPORT\n")
+        f.write("=" * 60 + "\n\n")
 
-        f.write(f"RESEARCH GOAL: {goal_description}\n\n")
+        f.write(f"GOAL/FOCUS:\n{goal_description}\n\n")
 
-        f.write("OVERALL STATISTICS:\n")
-        f.write(f"  Selected variables: {total_variables}\n")
-        f.write(f"  Consolidated relationships: {total_relationships}\n")
-        f.write(f"  Average papers per relationship: {avg_support:.1f}\n")
-        f.write(
-            f"  Positive relationships: {positive_relations} ({positive_relations / total_relationships * 100:.1f}%)\n")
-        f.write(
-            f"  Negative relationships: {negative_relations} ({negative_relations / total_relationships * 100:.1f}%)\n\n")
+        metadata = result_json.get('metadata', {})
+        f.write("CONSOLIDATION RESULTS:\n")
+        f.write(f"  Selected variables: {metadata.get('total_selected_variables', 0)}\n")
+        f.write(f"  Consolidated relationships: {metadata.get('total_relationships', 0)}\n")
+        f.write(f"  Positive relationships: {metadata.get('positive_relationships', 0)}\n")
+        f.write(f"  Negative relationships: {metadata.get('negative_relationships', 0)}\n")
+        f.write(f"  High evidence relationships: {metadata.get('high_evidence_relationships', 0)}\n\n")
 
-        f.write("SELECTED VARIABLES AND DEFINITIONS:\n")
-        for _, row in variables_df.iterrows():
-            f.write(f"  {row['variable_name']}: {row['definition']}\n")
-            f.write(f"    Relevance: {row['relevance_to_goal']}\n\n")
+        f.write("SELECTED VARIABLES:\n")
+        for var in result_json.get('selected_variables', []):
+            f.write(f"  • {var['variable_name']}\n")
+            f.write(f"    Definition: {var['definition']}\n")
 
-        f.write("RELATIONSHIP ANALYSIS:\n")
-        f.write("Most frequently appearing causal variables:\n")
-        causal_counts = relationships_df['causal_variable'].value_counts().head(10)
-        for var, count in causal_counts.items():
-            f.write(f"  {var}: {count} outgoing relationships\n")
-        f.write("\n")
+        f.write("KEY RELATIONSHIPS:\n")
+        for rel in result_json.get('consolidated_relationships', []):
+            f.write(f"  • {rel['causal_variable']} → {rel['effect_variable']} ({rel['polarity']})\n")
+            f.write(f"    Relationship: {rel['relationship_name']}\n")
+            f.write(f"    Sources: {rel['supporting_citations']}\n\n")
 
-        f.write("Most frequently appearing effect variables:\n")
-        effect_counts = relationships_df['effect_variable'].value_counts().head(10)
-        for var, count in effect_counts.items():
-            f.write(f"  {var}: {count} incoming relationships\n")
-        f.write("\n")
-
-        f.write("RELATIONSHIPS BY EVIDENCE STRENGTH:\n")
-        support_counts = relationships_df['num_supporting_papers'].value_counts().sort_index()
-        for papers, count in support_counts.items():
-            f.write(f"  {papers} supporting paper(s): {count} relationships\n")
-        f.write("\n")
-
-        f.write("STRONGEST SUPPORTED RELATIONSHIPS (2+ papers):\n")
-        strong_relations = relationships_df[relationships_df['num_supporting_papers'] >= 2].sort_values(
-            'num_supporting_papers', ascending=False)
-        for _, row in strong_relations.head(15).iterrows():
-            f.write(
-                f"  {row['causal_variable']} → {row['effect_variable']} ({row['polarity']}) - {row['num_supporting_papers']} papers\n")
-            f.write(f"    Citations: {row['supporting_citations']}\n")
-        f.write("\n")
-
-        f.write("GOAL RELEVANCE ANALYSIS:\n")
-        f.write("Variables directly related to the research goal:\n")
-        direct_vars = variables_df[variables_df['relevance_to_goal'].str.contains('direct', case=False, na=False)]
-        for _, row in direct_vars.iterrows():
-            f.write(f"  {row['variable_name']}: {row['relevance_to_goal']}\n")
-
-    print(f"✓ Goal-directed analysis report saved: {report_path}")
+    print(f"✓ Summary report saved: {report_path}")
 
 
-def process_step2(extraction_dir, research_goal, output_dir="results"):
+def process_step2(extraction_dir, goal_description, output_dir="results"):
     """
     Step 2: Goal-directed consolidation and validation of extracted relations.
 
     Args:
         extraction_dir (str): Directory containing Step 1 extraction files
-        research_goal (str): Research goal/focus for filtering variables and relationships
+        goal_description (str): Description of the goal/focus for filtering relationships
         output_dir (str): Directory to save results
     """
     # Initialize the Gemini client
@@ -305,7 +275,7 @@ def process_step2(extraction_dir, research_goal, output_dir="results"):
     os.makedirs(output_dir, exist_ok=True)
 
     print(f"Loading extractions from: {extraction_dir}")
-    print(f"Research goal: {research_goal}")
+    print(f"Goal/Focus: {goal_description}")
 
     # Load all extraction files
     combined_extractions = load_extraction_files(extraction_dir)
@@ -314,54 +284,34 @@ def process_step2(extraction_dir, research_goal, output_dir="results"):
         print("No valid extractions found")
         return
 
-    # Consolidate using LLM with goal direction
-    variables_df, relationships_df, raw_response = consolidate_with_llm(combined_extractions, research_goal, client)
+    # Consolidate using LLM with goal filtering
+    result_json, raw_response = consolidate_with_llm(combined_extractions, goal_description, client)
 
-    if variables_df.empty or relationships_df.empty:
-        print("✗ Goal-directed consolidation failed")
+    # Validate and enhance result
+    result_json = validate_and_enhance_result(result_json)
+
+    if not result_json:
+        print("✗ Consolidation failed")
         return
 
     # Save raw LLM response
     response_path = f"{output_dir}/step2_raw_response.txt"
     with open(response_path, 'w', encoding='utf-8') as f:
-        f.write(f"RESEARCH GOAL: {research_goal}\n\n")
-        f.write("=" * 50 + "\n\n")
         f.write(raw_response)
 
-    # Save selected variables
-    variables_path = f"{output_dir}/step2_selected_variables.csv"
-    variables_df.to_csv(variables_path, index=False)
+    # Save consolidated JSON
+    json_path = f"{output_dir}/step2_consolidated_relations.json"
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump(result_json, f, indent=2, ensure_ascii=False)
 
-    variables_excel_path = f"{output_dir}/step2_selected_variables.xlsx"
-    variables_df.to_excel(variables_excel_path, index=False)
-
-    # Save consolidated relationships
-    relationships_path = f"{output_dir}/step2_consolidated_relations.csv"
-    relationships_df.to_csv(relationships_path, index=False)
-
-    relationships_excel_path = f"{output_dir}/step2_consolidated_relations.xlsx"
-    relationships_df.to_excel(relationships_excel_path, index=False)
-
-    # Save combined Excel with both sheets
-    combined_excel_path = f"{output_dir}/step2_goal_directed_cld.xlsx"
-    with pd.ExcelWriter(combined_excel_path, engine='openpyxl') as writer:
-        variables_df.to_excel(writer, sheet_name='Selected Variables', index=False)
-        relationships_df.to_excel(writer, sheet_name='Consolidated Relations', index=False)
-
-        # Add goal description sheet
-        goal_df = pd.DataFrame({'Research Goal': [research_goal]})
-        goal_df.to_excel(writer, sheet_name='Research Goal', index=False)
-
-    # Create analysis report
-    create_analysis_report(variables_df, relationships_df, research_goal, output_dir)
+    # Create summary report
+    create_summary_report(result_json, goal_description, output_dir)
 
     print(f"\n✓ Step 2 completed successfully!")
-    print(f"  - Selected variables: {len(variables_df)}")
-    print(f"  - Consolidated relationships: {len(relationships_df)}")
-    print(f"  - Variables saved: {variables_path}")
-    print(f"  - Relationships saved: {relationships_path}")
-    print(f"  - Combined Excel: {combined_excel_path}")
-    print(f"  - Raw response: {response_path}")
+    print(f"  - Selected variables: {len(result_json['selected_variables'])}")
+    print(f"  - Consolidated relationships: {len(result_json['consolidated_relationships'])}")
+    print(f"  - JSON saved: {json_path}")
+    print(f"  - Raw response saved: {response_path}")
 
 
 if __name__ == "__main__":
@@ -369,13 +319,13 @@ if __name__ == "__main__":
     extraction_dir = "results/step1_extractions"
 
     # Define your research goal and focus areas
-    research_goal = """Understand in- or decreases in vehicle distance travelled by all cars when Autonomous Vehicles (AVs) are introduced."""
+    goal_description = """Understand in- or decreases in vehicle distance travelled by all cars when Autonomous Vehicles (AVs) are introduced."""
 
     focus_areas = """"""
 
     # Run Step 2
     process_step2(
         extraction_dir=extraction_dir,
-        research_goal=research_goal,
+        goal_description=goal_description,
         output_dir="results"
     )
