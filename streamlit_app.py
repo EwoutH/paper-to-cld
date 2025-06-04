@@ -222,7 +222,7 @@ Here is the extracted data from all papers:
         except Exception as e:
             return None, f"Error: {str(e)}"
 
-    def create_cld_diagram(self, relations: List[Dict], layout_type: str = 'spring') -> go.Figure:
+    def create_cld_diagram(self, relations: List[Dict], layout_type: str = 'Kamada-Kawai') -> go.Figure:
         """Create interactive Plotly CLD diagram."""
         # Build graph
         G = nx.DiGraph()
@@ -242,11 +242,15 @@ Here is the extracted data from all papers:
 
         # Calculate layout
         if layout_type == 'spring':
-            pos = nx.spring_layout(G, k=2, iterations=50, seed=42)
+            pos = nx.spring_layout(G, k=1, iterations=50, seed=42)
         elif layout_type == 'circular':
             pos = nx.circular_layout(G)
         elif layout_type == 'shell':
             pos = nx.shell_layout(G)
+        elif layout_type == 'Kamada-Kawai':
+            pos = nx.kamada_kawai_layout(G)
+        elif layout_type == 'spectral':
+            pos = nx.spectral_layout(G)
         else:
             pos = nx.spring_layout(G, seed=42)
 
@@ -523,6 +527,14 @@ def main():
                 st.subheader("Consolidated Relations")
                 st.markdown("Check/uncheck relationships to include in your CLD:")
 
+                # CLD filtering option
+                enforce_cld_rules = st.checkbox(
+                    "🔄 Enforce CLD rules (variables must have ≥2 incoming OR ≥2 outgoing connections)",
+                    value=False,
+                    key="enforce_cld_rules",
+                    help="In proper CLDs, variables should have multiple connections to show system dynamics"
+                )
+
                 for rel in st.session_state.consolidated_relations:
                     rel_key = f"{rel['causal_variable']}→{rel['effect_variable']}"
                     current_selection = st.session_state.relation_selections.get(rel_key, True)
@@ -551,14 +563,60 @@ def main():
             if st.session_state.relation_selections.get(f"{rel['causal_variable']}→{rel['effect_variable']}", False)
         ]
 
+        # Apply CLD filtering if enabled
+        if st.session_state.get('enforce_cld_rules', False):
+            # Count connections for each variable
+            var_connections = {}
+            for rel in selected_relations:
+                causal_var = rel['causal_variable']
+                effect_var = rel['effect_variable']
+
+                if causal_var not in var_connections:
+                    var_connections[causal_var] = {'incoming': 0, 'outgoing': 0}
+                if effect_var not in var_connections:
+                    var_connections[effect_var] = {'incoming': 0, 'outgoing': 0}
+
+                var_connections[causal_var]['outgoing'] += 1
+                var_connections[effect_var]['incoming'] += 1
+
+            # Filter variables that have at least 2 incoming OR 2 outgoing connections
+            valid_vars = set()
+            for var, connections in var_connections.items():
+                if connections['incoming'] >= 2 or connections['outgoing'] >= 2:
+                    valid_vars.add(var)
+
+            # Filter relations to only include those between valid variables
+            original_count = len(selected_relations)
+            selected_relations = [
+                rel for rel in selected_relations
+                if rel['causal_variable'] in valid_vars and rel['effect_variable'] in valid_vars
+            ]
+
+            if original_count != len(selected_relations):
+                st.info(f"🔄 CLD filtering: Reduced from {original_count} to {len(selected_relations)} relationships")
+                excluded_vars = set()
+                for rel in st.session_state.consolidated_relations:
+                    if st.session_state.relation_selections.get(f"{rel['causal_variable']}→{rel['effect_variable']}",
+                                                                False):
+                        if rel['causal_variable'] not in valid_vars:
+                            excluded_vars.add(rel['causal_variable'])
+                        if rel['effect_variable'] not in valid_vars:
+                            excluded_vars.add(rel['effect_variable'])
+
+                if excluded_vars:
+                    with st.expander("View excluded variables"):
+                        for var in sorted(excluded_vars):
+                            connections = var_connections.get(var, {'incoming': 0, 'outgoing': 0})
+                            st.write(f"• {var} (in: {connections['incoming']}, out: {connections['outgoing']})")
+
         col1, col2 = st.columns([1, 2])
 
         with col1:
             layout_type = st.selectbox(
                 "Layout Algorithm:",
-                options=['spring', 'circular', 'shell'],
+                options=['Kamada-Kawai', 'Spring', 'Circular', 'Shell', 'Spectral'],
                 index=0,
-                help="Spring: Force-directed layout, Circular: Nodes in circle, Shell: Concentric shells"
+                help="Spring: Force-directed layout, Circular: Nodes in circle, Shell: Concentric shells, Kamada-Kawai: Optimized for aesthetics, Spectral: Based on eigenvectors."
             )
 
             if st.button("📊 Generate CLD", key="generate_cld"):
