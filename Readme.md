@@ -6,6 +6,8 @@ Paper to CLD bridges the gap between academic literature and systems thinking by
 ## Contribute
 This project is very experimental and in early stages of development. All ideas, feedback, and contributions are welcome!
 
+![streamlit_demo.png](img/streamlit_demo.png)
+
 ## Problem and motivation
 Understanding complex systems often requires synthesizing causal relationships from multiple research sources. Traditional approaches to building causal loop diagrams are time-intensive and rely heavily on manual extraction and synthesis of relationships from literature. This creates barriers to developing comprehensive system models, particularly when dealing with large volumes of research papers.
 
