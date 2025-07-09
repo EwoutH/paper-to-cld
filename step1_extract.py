@@ -50,7 +50,7 @@ DO NOT extract:
 - Statistical relationships that don't establish causation
 
 IMPORTANT: 
-- Start with the 6 metadata lines exactly as formatted above
+- Start with the 5 metadata lines exactly as formatted above
 - Follow with a blank line
 - Then provide the CSV with header row
 - No other text, explanations, or markdown formatting
